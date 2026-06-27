@@ -8,7 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const STATE_FILE = path.join(__dirname, 'state.json');
 
-app.use(cors({ origin: 'https://fair-dice.onrender.com' }));
+app.use(cors({ origin: 'https://fairdice.42web.io' }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
