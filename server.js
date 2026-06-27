@@ -8,7 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const STATE_FILE = path.join(__dirname, 'state.json');
 
-app.use(cors({ origin: 'https://fairdice.42web.io' }));
+app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -54,7 +54,7 @@ function calculateRoll(serverSeed, clientSeed, nonce) {
     hmac.update(`${clientSeed}-${nonce}`);
     const hash = hmac.digest('hex');
     const num = parseInt(hash.substring(0, 8), 16);
-    return num % 4;
+    return num % 6;
 }
 
 app.get('/api/init', (req, res) => {
@@ -68,37 +68,28 @@ app.get('/api/init', (req, res) => {
 
 app.post('/api/roll', (req, res) => {
     const { color, betAmount } = req.body;
+    const finalBet = betAmount || 10;
 
-    if (!color || !betAmount || betAmount <= 0) {
-        return res.status(400).json({ error: 'Invalid bet parameters' });
-    }
-
-    if (betAmount > gameState.balance) {
+    if (finalBet > gameState.balance) {
         return res.status(400).json({ error: 'Insufficient balance' });
     }
 
-    const colorIndex = { red: 0, blue: 1, green: 2, purple: 3 }[color.toLowerCase()];
-    if (colorIndex === undefined) {
-        return res.status(400).json({ error: 'Invalid color' });
-    }
-
     const resultIndex = calculateRoll(gameState.serverSeed, gameState.clientSeed, gameState.nonce);
-    const colors = ['red', 'blue', 'green', 'purple'];
+    const colors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'];
     const resultColor = colors[resultIndex];
     
     let payout = 0;
     let win = false;
 
-    if (resultIndex === colorIndex) {
-        payout = betAmount * 3.5;
-        gameState.balance += (payout - betAmount);
+    if (color && color.toLowerCase() === resultColor) {
+        payout = finalBet * 5;
+        gameState.balance += (payout - finalBet);
         win = true;
     } else {
-        gameState.balance -= betAmount;
+        gameState.balance -= finalBet;
     }
 
     const revealedServerSeed = gameState.serverSeed;
-    
     gameState.nonce += 1;
     
     if (gameState.nonce >= 10) {
@@ -121,15 +112,12 @@ app.post('/api/roll', (req, res) => {
 
 app.post('/api/verify', (req, res) => {
     const { serverSeed, clientSeed, nonce } = req.body;
-    
     if (!serverSeed || !clientSeed || nonce === undefined) {
         return res.status(400).json({ error: 'Missing parameters' });
     }
-
     const expectedHash = hashSeed(serverSeed);
     const resultIndex = calculateRoll(serverSeed, clientSeed, nonce);
-    const colors = ['red', 'blue', 'green', 'purple'];
-
+    const colors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'];
     res.json({
         validHash: expectedHash,
         resultColor: colors[resultIndex],
