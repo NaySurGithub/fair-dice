@@ -28,6 +28,7 @@ const PERYA_PAYOUT_MAP = new Map([
 
 const userStates = new Map();
 let globalRolls = [];
+let lastRoll = { timestamp: 0 };
 
 function getDefaultState() {
     return {
@@ -128,6 +129,12 @@ app.post('/api/roll', (req, res) => {
         globalRolls = globalRolls.slice(0, 50);
     }
 
+    lastRoll = {
+        betColor: betColor,
+        results: results,
+        timestamp: Date.now()
+    };
+
     let peryaPayout = 0;
     if (mode === 'perya') {
         const matches = results.filter(r => r.color === betColor).length;
@@ -147,8 +154,12 @@ app.get('/api/feed', (req, res) => {
     res.json(globalRolls);
 });
 
+app.get('/api/last-roll', (req, res) => {
+    res.json(lastRoll);
+});
+
 app.get('/overlay', (req, res) => {
-    const overlayHtml = `<!DOCTYPE html><html><head><style>body{background:transparent;font-family:'Segoe UI',sans-serif;color:white;text-shadow:2px 2px 8px rgba(0,0,0,0.9);padding:20px;margin:0;} .box{background:rgba(0,0,0,0.7);padding:25px;border-radius:20px;border:2px solid rgba(255,255,255,0.2);backdrop-filter:blur(10px);} h1{font-size:2.5rem;margin:0 0 15px 0;color:#fff;} .hash{font-family:monospace;font-size:1.2rem;word-break:break-all;opacity:0.9;background:rgba(255,255,255,0.1);padding:10px;border-radius:8px;margin-top:10px;} .badge{background:#10b981;padding:8px 20px;border-radius:30px;display:inline-block;margin-top:20px;font-weight:bold;font-size:1.1rem;box-shadow:0 4px 15px rgba(16,185,129,0.4);}</style></head><body><div class="box"><h1>🎲 FairDice Stream</h1><div>Current Hash Commit:</div><div class="hash" id="hash">Loading...</div><div class="badge">✅ VERIFIED FAIR</div></div><script>async function update(){const res=await fetch('/api/init');const data=await res.json();document.getElementById('hash').textContent=data.hashedServerSeed;}update();setInterval(update,5000);</script></body></html>`;
+    const overlayHtml = `<!DOCTYPE html><html><head><style>@import url('https://fonts.googleapis.com/css2?family=Bangers&family=Fredoka:wght@700&display=swap');*{margin:0;padding:0;box-sizing:border-box;}body{background:transparent;display:flex;justify-content:center;align-items:center;height:100vh;font-family:'Bangers',cursive;overflow:hidden;}#display{font-size:20vw;color:white;text-shadow:0 0 30px rgba(0,0,0,0.8),8px 8px 0 rgba(0,0,0,0.6);opacity:0;transition:opacity 0.2s;text-align:center;line-height:1;}#display.active{opacity:1;}#display.rolling{animation:shake 0.08s infinite;color:#fbbf24;text-shadow:0 0 50px #f59e0b,8px 8px 0 #000;}#display.win{color:#22c55e;text-shadow:0 0 60px #16a34a,10px 10px 0 #000;animation:popIn 0.4s cubic-bezier(0.175,0.885,0.32,1.275);}#display.lose{color:#ef4444;text-shadow:0 0 60px #dc2626,10px 10px 0 #000;animation:dropIn 0.5s cubic-bezier(0.175,0.885,0.32,1.275);}@keyframes shake{0%{transform:translate(2px,2px) rotate(1deg);}25%{transform:translate(-2px,-2px) rotate(-1deg);}50%{transform:translate(-2px,2px) rotate(0deg);}75%{transform:translate(2px,-2px) rotate(1deg);}100%{transform:translate(2px,2px) rotate(0deg);}}@keyframes popIn{0%{transform:scale(0) rotate(-10deg);opacity:0;}70%{transform:scale(1.3) rotate(5deg);opacity:1;}100%{transform:scale(1) rotate(0deg);opacity:1;}}@keyframes dropIn{0%{transform:translateY(-200%) scale(1.5);opacity:0;}60%{transform:translateY(20px) scale(0.9);opacity:1;}100%{transform:translateY(0) scale(1);opacity:1;}}#bet-info{position:absolute;bottom:10%;font-family:'Fredoka',sans-serif;font-size:4vw;color:white;text-shadow:3px 3px 0 #000;opacity:0;transition:opacity 0.3s;}#bet-info.active{opacity:1;}</style></head><body><div id="display"></div><div id="bet-info"></div><script>let lastTimestamp=0;const display=document.getElementById('display');const betInfo=document.getElementById('bet-info');async function poll(){try{const res=await fetch('/api/last-roll');const data=await res.json();if(data&&data.timestamp>lastTimestamp){lastTimestamp=data.timestamp;runSequence(data);}}catch(e){}}async function runSequence(data){display.className='active rolling';display.textContent='ROLLING...';betInfo.className='active';betInfo.textContent='BET: '+data.betColor.toUpperCase();await sleep(1500);betInfo.className='';display.className='';const isWin=data.results.some(r=>r.color===data.betColor);if(isWin){display.className='active win';display.textContent='WIN!';}else{display.className='active lose';display.textContent='LOSE!';}await sleep(3000);display.className='';}function sleep(ms){return new Promise(r=>setTimeout(r,ms));}setInterval(poll,500);</script></body></html>`;
     res.send(overlayHtml);
 });
 
