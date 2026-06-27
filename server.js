@@ -6,33 +6,37 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const stateMap = new Map();
-
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-let gameState = {
-    serverSeed: '',
-    hashedServerSeed: '',
-    clientSeed: '',
-    nonce: 0,
-    customClientSeed: null
-};
+const COLOR_MAP = new Map([
+    ['red', 0], ['orange', 1], ['yellow', 2],
+    ['green', 3], ['blue', 4], ['purple', 5]
+]);
 
+const INDEX_TO_COLOR = new Map([
+    [0, 'red'], [1, 'orange'], [2, 'yellow'],
+    [3, 'green'], [4, 'blue'], [5, 'purple']
+]);
+
+const PERYA_PAYOUT_MAP = new Map([
+    [1, 1.2],
+    [2, 2.0],
+    [3, 5.0]
+]);
+
+const userStates = new Map();
 let globalRolls = [];
 
-function loadState() {
-    if (stateMap.has('gameState')) {
-        gameState = stateMap.get('gameState');
-    } else {
-        generateNewRound();
-        saveState();
-    }
-}
-
-function saveState() {
-    stateMap.set('gameState', gameState);
+function getDefaultState() {
+    return {
+        serverSeed: '',
+        hashedServerSeed: '',
+        clientSeed: '',
+        nonce: 0,
+        customClientSeed: null
+    };
 }
 
 function generateSeed(bytes) {
@@ -43,12 +47,21 @@ function hashSeed(seed) {
     return crypto.createHash('sha256').update(seed).digest('hex');
 }
 
-function generateNewRound() {
-    gameState.serverSeed = generateSeed(32);
-    gameState.hashedServerSeed = hashSeed(gameState.serverSeed);
-    gameState.clientSeed = generateSeed(8);
-    gameState.nonce = 0;
-    gameState.customClientSeed = null;
+function generateNewRound(state) {
+    state.serverSeed = generateSeed(32);
+    state.hashedServerSeed = hashSeed(state.serverSeed);
+    state.clientSeed = generateSeed(8);
+    state.nonce = 0;
+    state.customClientSeed = null;
+}
+
+function getUserState(sessionId) {
+    if (!userStates.has(sessionId)) {
+        const newState = getDefaultState();
+        generateNewRound(newState);
+        userStates.set(sessionId, newState);
+    }
+    return userStates.get(sessionId);
 }
 
 function calculateRoll(serverSeed, clientSeed, nonce) {
@@ -60,63 +73,73 @@ function calculateRoll(serverSeed, clientSeed, nonce) {
 }
 
 app.get('/api/init', (req, res) => {
+    const sessionId = req.headers['x-session-id'] || 'default';
+    const state = getUserState(sessionId);
+    
     res.json({
-        hashedServerSeed: gameState.hashedServerSeed,
-        clientSeed: gameState.customClientSeed || gameState.clientSeed,
-        nonce: gameState.nonce
+        hashedServerSeed: state.hashedServerSeed,
+        clientSeed: state.customClientSeed || state.clientSeed,
+        nonce: state.nonce
     });
 });
 
 app.post('/api/set-client-seed', (req, res) => {
+    const sessionId = req.headers['x-session-id'] || 'default';
+    const state = getUserState(sessionId);
     const { seed } = req.body;
+    
     if (seed && seed.trim() !== '') {
-        gameState.customClientSeed = seed.trim();
+        state.customClientSeed = seed.trim();
     } else {
-        gameState.customClientSeed = null;
+        state.customClientSeed = null;
     }
-    saveState();
-    res.json({ success: true, clientSeed: gameState.customClientSeed || gameState.clientSeed });
+    
+    res.json({ success: true, clientSeed: state.customClientSeed || state.clientSeed });
 });
 
 app.post('/api/roll', (req, res) => {
+    const sessionId = req.headers['x-session-id'] || 'default';
+    const state = getUserState(sessionId);
+    
     const { numDice = 1, mode = 'standard', betColor = 'red' } = req.body;
-    const colors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'];
     const results = [];
-    const activeClientSeed = gameState.customClientSeed || gameState.clientSeed;
-
-    const diceCount = mode === 'perya' ? 3 : numDice;
+    const activeClientSeed = state.customClientSeed || state.clientSeed;
+    const diceCount = parseInt(mode === 'perya' ? 3 : numDice) || 1;
 
     for (let i = 0; i < diceCount; i++) {
-        const resultIndex = calculateRoll(gameState.serverSeed, activeClientSeed, gameState.nonce);
-        results.push({ color: colors[resultIndex], index: resultIndex });
-        gameState.nonce += 1;
+        const resultIndex = calculateRoll(state.serverSeed, activeClientSeed, state.nonce);
+        const colorName = INDEX_TO_COLOR.get(resultIndex);
+        results.push({ color: colorName, index: resultIndex });
+        state.nonce += 1;
     }
 
-    if (gameState.nonce >= 100) {
-        generateNewRound();
+    if (state.nonce >= 100) {
+        generateNewRound(state);
     }
-    saveState();
 
     const fakeUser = 'User_' + Math.floor(1000 + Math.random() * 9000);
-    results.forEach(r => {
-        globalRolls.unshift({ user: fakeUser, color: r.color, time: Date.now() });
+    globalRolls.unshift({ 
+        user: fakeUser, 
+        colors: results.map(r => r.color), 
+        time: Date.now() 
     });
-    if (globalRolls.length > 50) globalRolls = globalRolls.slice(0, 50);
+    
+    if (globalRolls.length > 50) {
+        globalRolls = globalRolls.slice(0, 50);
+    }
 
     let peryaPayout = 0;
     if (mode === 'perya') {
         const matches = results.filter(r => r.color === betColor).length;
-        if (matches === 3) peryaPayout = 5;
-        else if (matches === 2) peryaPayout = 2;
-        else if (matches === 1) peryaPayout = 1.2;
+        peryaPayout = PERYA_PAYOUT_MAP.get(matches) || 0;
     }
 
     res.json({
         results,
         peryaPayout,
-        nextHashedServerSeed: gameState.hashedServerSeed,
-        nextClientSeed: gameState.customClientSeed || gameState.clientSeed,
-        nextNonce: gameState.nonce
+        nextHashedServerSeed: state.hashedServerSeed,
+        nextClientSeed: state.customClientSeed || state.clientSeed,
+        nextNonce: state.nonce
     });
 });
 
@@ -129,14 +152,6 @@ app.get('/overlay', (req, res) => {
     res.send(overlayHtml);
 });
 
-app.post('/api/verify', (req, res) => {
-    const { serverSeed, clientSeed, nonce } = req.body;
-    if (!serverSeed || !clientSeed || nonce === undefined) return res.status(400).json({ error: 'Missing parameters' });
-    const expectedHash = hashSeed(serverSeed);
-    const resultIndex = calculateRoll(serverSeed, clientSeed, nonce);
-    const colors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'];
-    res.json({ validHash: expectedHash, resultColor: colors[resultIndex], resultIndex });
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });
-
-loadState();
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
