@@ -28,6 +28,7 @@ const PERYA_PAYOUT_MAP = new Map([
 
 const userStates = new Map();
 const lastRolls = new Map();
+const receipts = new Map(); // Stores shareable receipts
 let globalRolls = [];
 
 function getDefaultState() {
@@ -107,6 +108,7 @@ app.post('/api/roll', (req, res) => {
     const results = [];
     const activeClientSeed = state.customClientSeed || state.clientSeed;
     const diceCount = parseInt(mode === 'perya' ? 3 : numDice) || 1;
+    const startNonce = state.nonce; // Capture starting nonce for receipt
 
     for (let i = 0; i < diceCount; i++) {
         const resultIndex = calculateRoll(state.serverSeed, activeClientSeed, state.nonce);
@@ -121,6 +123,27 @@ app.post('/api/roll', (req, res) => {
 
     const resultString = results.map(r => r.color).join('-');
     const proofHash = crypto.createHash('sha256').update(resultString + state.serverSeed).digest('hex').substring(0, 6).toUpperCase();
+
+    // Generate Receipt ID
+    const receiptId = crypto.randomBytes(6).toString('hex');
+    receipts.set(receiptId, {
+        id: receiptId,
+        results,
+        betColor,
+        mode,
+        proofHash,
+        clientSeed: activeClientSeed,
+        nonce: startNonce,
+        hashedServerSeed: state.hashedServerSeed,
+        serverSeed: state.serverSeed, // REVEALED FOR THIS RECEIPT ONLY
+        timestamp: Date.now()
+    });
+
+    // Limit memory usage
+    if (receipts.size > 2000) {
+        const firstKey = receipts.keys().next().value;
+        receipts.delete(firstKey);
+    }
 
     const fakeUser = 'User_' + Math.floor(1000 + Math.random() * 9000);
     globalRolls.unshift({ 
@@ -151,6 +174,7 @@ app.post('/api/roll', (req, res) => {
         results,
         peryaPayout,
         proofHash,
+        receiptId, // Send ID to frontend
         nextHashedServerSeed: state.hashedServerSeed,
         nextClientSeed: state.customClientSeed || state.clientSeed,
         nextNonce: state.nonce
@@ -164,6 +188,203 @@ app.get('/api/feed', (req, res) => {
 app.get('/api/last-roll', (req, res) => {
     const username = req.query.user || 'default';
     res.json(lastRolls.get(username) || { timestamp: 0 });
+});
+
+app.get('/api/receipt/:id', (req, res) => {
+    const receipt = receipts.get(req.params.id);
+    if (!receipt) return res.status(404).json({ error: 'Receipt not found' });
+    res.json(receipt);
+});
+
+app.get('/receipt/:id', (req, res) => {
+    const receiptId = req.params.id;
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FairDice - Verified Receipt</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@600&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Nunito', sans-serif; background: #0f172a; color: #f8fafc; min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; margin: 0; }
+        .receipt-card { background: #1e293b; border: 2px solid #334155; border-radius: 24px; width: 100%; max-width: 500px; padding: 2rem; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); position: relative; overflow: hidden; }
+        .receipt-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 6px; background: linear-gradient(90deg, #22c55e, #10b981); }
+        .header { text-align: center; margin-bottom: 2rem; }
+        .logo { font-size: 1.5rem; font-weight: 800; color: #fff; margin-bottom: 0.5rem; }
+        .status-badge { display: inline-block; background: #22c55e; color: #064e3b; padding: 6px 16px; border-radius: 20px; font-weight: 800; font-size: 0.9rem; letter-spacing: 1px; box-shadow: 0 4px 15px rgba(34, 197, 94, 0.4); }
+        .dice-display { display: flex; justify-content: center; gap: 15px; margin: 2rem 0; }
+        .die { width: 70px; height: 70px; background: #fff; border-radius: 12px; display: flex; justify-content: center; align-items: center; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); }
+        .dot { width: 45px; height: 45px; border-radius: 50%; box-shadow: inset 0 4px 8px rgba(0,0,0,0.2); }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 2rem; }
+        .info-item { background: #0f172a; padding: 1rem; border-radius: 12px; border: 1px solid #334155; }
+        .info-label { font-size: 0.75rem; text-transform: uppercase; color: #94a3b8; font-weight: 700; margin-bottom: 4px; }
+        .info-value { font-size: 1.1rem; font-weight: 700; color: #fff; text-transform: capitalize; }
+        .crypto-section { background: #0f172a; border: 1px dashed #334155; border-radius: 12px; padding: 1.5rem; margin-top: 2rem; }
+        .crypto-title { font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; color: #22c55e; margin-bottom: 1rem; display: flex; align-items: center; gap: 8px; }
+        .hash-row { display: flex; flex-direction: column; gap: 8px; margin-bottom: 1rem; }
+        .hash-label { font-size: 0.7rem; color: #64748b; text-transform: uppercase; font-weight: 700; }
+        .hash-val { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #e2e8f0; word-break: break-all; background: #1e293b; padding: 6px; border-radius: 4px; border: 1px solid #334155; }
+        .verify-btn { width: 100%; background: #3b82f6; color: #fff; border: none; padding: 12px; border-radius: 8px; font-weight: 700; cursor: pointer; margin-top: 1rem; transition: background 0.2s; }
+        .verify-btn:hover { background: #2563eb; }
+        .verify-result { margin-top: 1rem; padding: 1rem; border-radius: 8px; text-align: center; font-weight: 700; display: none; }
+        .verify-result.success { background: #dcfce7; color: #166534; display: block; }
+        .verify-result.fail { background: #fee2e2; color: #991b1b; display: block; }
+        .footer { text-align: center; margin-top: 2rem; font-size: 0.8rem; color: #64748b; }
+        .color-red { background: #ef4444; } .color-orange { background: #f97316; } .color-yellow { background: #eab308; }
+        .color-green { background: #22c55e; } .color-blue { background: #3b82f6; } .color-purple { background: #a855f7; }
+    </style>
+</head>
+<body>
+    <div class="receipt-card">
+        <div class="header">
+            <div class="logo">🎲 FairDice</div>
+            <div class="status-badge" id="status">LOADING...</div>
+        </div>
+
+        <div class="dice-display" id="dice-area"></div>
+
+        <div class="info-grid">
+            <div class="info-item">
+                <div class="info-label">Bet Color</div>
+                <div class="info-value" id="bet-color">-</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Mode</div>
+                <div class="info-value" id="mode">-</div>
+            </div>
+            <div class="info-item" style="grid-column: span 2;">
+                <div class="info-label">Visual Proof Hash</div>
+                <div class="info-value" style="font-family: 'JetBrains Mono', monospace; color: #fbbf24;" id="proof-hash">-</div>
+            </div>
+        </div>
+
+        <div class="crypto-section">
+            <div class="crypto-title">🔒 Cryptographic Data</div>
+            <div class="hash-row">
+                <div class="hash-label">Server Seed (Revealed)</div>
+                <div class="hash-val" id="server-seed">-</div>
+            </div>
+            <div class="hash-row">
+                <div class="hash-label">Client Seed</div>
+                <div class="hash-val" id="client-seed">-</div>
+            </div>
+            <div class="hash-row">
+                <div class="hash-label">Nonce</div>
+                <div class="hash-val" id="nonce">-</div>
+            </div>
+            <button class="verify-btn" onclick="verifyReceipt()">Verify Math</button>
+            <div class="verify-result" id="verify-result"></div>
+        </div>
+
+        <div class="footer">
+            Receipt ID: <span id="receipt-id">-</span><br>
+            Play at <strong>fairdice.com</strong>
+        </div>
+    </div>
+
+    <script>
+        let receiptData = null;
+
+        async function loadReceipt() {
+            const id = window.location.pathname.split('/').pop();
+            document.getElementById('receipt-id').textContent = id;
+            
+            try {
+                const res = await fetch('/api/receipt/' + id);
+                if (!res.ok) throw new Error('Not found');
+                receiptData = await res.json();
+                renderReceipt();
+            } catch (e) {
+                document.getElementById('status').textContent = 'INVALID RECEIPT';
+                document.getElementById('status').style.background = '#ef4444';
+                document.getElementById('status').style.color = '#fff';
+            }
+        }
+
+        function renderReceipt() {
+            if (!receiptData) return;
+
+            // Status
+            const isWin = receiptData.results.some(r => r.color === receiptData.betColor);
+            const statusEl = document.getElementById('status');
+            if (isWin) {
+                statusEl.textContent = '✅ VERIFIED WIN';
+            } else {
+                statusEl.textContent = '✅ VERIFIED ROLL';
+                statusEl.style.background = '#3b82f6';
+                statusEl.style.color = '#fff';
+            }
+
+            // Dice
+            const area = document.getElementById('dice-area');
+            area.innerHTML = '';
+            receiptData.results.forEach(r => {
+                const die = document.createElement('div');
+                die.className = 'die';
+                die.innerHTML = '<div class="dot color-' + r.color + '"></div>';
+                area.appendChild(die);
+            });
+
+            // Info
+            document.getElementById('bet-color').textContent = receiptData.betColor;
+            document.getElementById('mode').textContent = receiptData.mode;
+            document.getElementById('proof-hash').textContent = receiptData.proofHash;
+            
+            // Crypto
+            document.getElementById('server-seed').textContent = receiptData.serverSeed;
+            document.getElementById('client-seed').textContent = receiptData.clientSeed;
+            document.getElementById('nonce').textContent = receiptData.nonce;
+        }
+
+        async function verifyReceipt() {
+            if (!receiptData) return;
+            const resultEl = document.getElementById('verify-result');
+            
+            try {
+                // 1. Verify Hash
+                const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(receiptData.serverSeed));
+                const hashArray = Array.from(new Uint8Array(hashBuffer));
+                const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+                
+                if (hashHex !== receiptData.hashedServerSeed) {
+                    resultEl.className = 'verify-result fail';
+                    resultEl.textContent = '❌ HASH MISMATCH: Server Seed does not match Commit!';
+                    return;
+                }
+
+                // 2. Verify Result
+                const colors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'];
+                const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(receiptData.serverSeed), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+                
+                for (let i = 0; i < receiptData.results.length; i++) {
+                    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(receiptData.clientSeed + '-' + (receiptData.nonce + i)));
+                    const sigArray = Array.from(new Uint8Array(sig));
+                    const sigHex = sigArray.map(b => b.toString(16).padStart(2, '0')).join('');
+                    const num = parseInt(sigHex.substring(0, 8), 16);
+                    const calcIndex = num % 6;
+                    const calcColor = colors[calcIndex];
+                    
+                    if (calcColor !== receiptData.results[i].color) {
+                        resultEl.className = 'verify-result fail';
+                        resultEl.textContent = '❌ RESULT MISMATCH: Dice ' + (i+1) + ' should be ' + calcColor + '!';
+                        return;
+                    }
+                }
+
+                resultEl.className = 'verify-result success';
+                resultEl.innerHTML = '✅ MATHEMATICALLY VERIFIED<br><span style="font-size: 0.8rem; font-weight: 400;">The dice, hash, and seeds all match perfectly.</span>';
+
+            } catch (e) {
+                resultEl.className = 'verify-result fail';
+                resultEl.textContent = '❌ ERROR: ' + e.message;
+            }
+        }
+
+        loadReceipt();
+    </script>
+</body>
+</html>`;
+    res.send(html);
 });
 
 app.get('/overlay', (req, res) => {
